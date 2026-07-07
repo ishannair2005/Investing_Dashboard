@@ -194,5 +194,12 @@
     "sector": "Communication Services",
     "added_date": "2026-07-07",
     "active": true
+  },
+  {
+    "ticker": "PLTR",
+    "name": "Palantir Technologies Inc.",
+    "sector": "Technology",
+    "added_date": "2026-07-07",
+    "active": true
   }
 ]
