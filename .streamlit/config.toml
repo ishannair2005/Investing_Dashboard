@@ -1,0 +1,13 @@
+[theme]
+base = "light"
+primaryColor = "#B4A7D6"
+backgroundColor = "#FDFAF6"
+secondaryBackgroundColor = "#F3E8EE"
+textColor = "#4A4453"
+font = "sans serif"
+
+[server]
+headless = false
+# Not 8501 (Streamlit's default) -- already in use by an unrelated
+# Streamlit app on this machine.
+port = 8517

@@ -1,0 +1,20 @@
+#!/bin/bash
+# Double-click launcher: starts (or reuses) the Streamlit dashboard
+# server and opens it in the browser. If a server from a previous
+# double-click is still running, this just opens a new browser tab at
+# it instead of spawning a second server on the same port.
+set -uo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+cd "$DIR"
+# Deliberately not 8501 (Streamlit's default) -- that port is already in
+# use by an unrelated Streamlit app on this machine.
+PORT=8517
+
+if curl -s "http://localhost:$PORT/_stcore/health" | grep -q "ok"; then
+    open "http://localhost:$PORT"
+else
+    source venv/bin/activate
+    mkdir -p logs
+    nohup streamlit run dashboard_app.py --server.port "$PORT" >> logs/streamlit.log 2>&1 &
+    disown
+fi
