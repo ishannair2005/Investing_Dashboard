@@ -180,5 +180,12 @@
     "sector": "Consumer Cyclical",
     "added_date": "2026-07-07",
     "active": true
+  },
+  {
+    "ticker": "MANU",
+    "name": "Manchester United plc",
+    "sector": "Communication Services",
+    "added_date": "2026-07-07",
+    "active": true
   }
 ]
