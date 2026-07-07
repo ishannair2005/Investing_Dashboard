@@ -65,7 +65,14 @@ def add_company(ticker: str, run_ai_analysis: bool = True, sync_to_workbook: boo
 
     logger.info("Validating %s...", ticker)
     if not validate_ticker(ticker):
-        summary["error"] = f"'{ticker}' does not resolve to a tradeable company on Yahoo Finance."
+        # validate_ticker() already retries transient failures, but a
+        # data-provider hiccup can still exhaust those -- don't assert
+        # the ticker is definitely wrong when it might just be that.
+        summary["error"] = (
+            f"'{ticker}' didn't resolve to a tradeable company on Yahoo Finance. "
+            f"If you're confident this ticker is correct, this may be a temporary data "
+            f"provider issue (check the logs) -- try again in a moment."
+        )
         return summary
 
     existing = tickers.get_ticker_record(ticker)

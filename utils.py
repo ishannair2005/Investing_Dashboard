@@ -76,20 +76,38 @@ def get_yf_ticker(ticker: str) -> yf.Ticker:
     return yf.Ticker(ticker)
 
 
+@retry(exceptions=(Exception,))
+def _fetch_ticker_info(ticker: str) -> dict:
+    # yf.Ticker() construction is lazy -- the actual HTTP request (and
+    # thus the actual risk of a transient failure) happens on .info
+    # access, so the retry has to wrap *this*, not just the constructor.
+    return yf.Ticker(ticker).info or {}
+
+
 def validate_ticker(ticker: str) -> bool:
     """Confirm a symbol resolves to a real, currently priced company.
 
     yfinance does not raise for unknown symbols -- it returns a
     near-empty info dict. So "valid" here means: has an identifying
     name AND has a current price, not just "didn't throw".
+
+    Retries transient failures the same as every other yfinance call in
+    this codebase. Without this, a single dropped request (a cold
+    container's first-ever request to Yahoo Finance, a momentary rate
+    limit) looks identical to "this ticker doesn't exist", which is
+    actively misleading for a ticker that's actually real.
     """
     ticker = ticker.strip().upper()
     if not ticker:
         return False
     try:
-        info = yf.Ticker(ticker).info
+        info = _fetch_ticker_info(ticker)
     except Exception as exc:
-        logger.warning("Ticker validation failed for %s: %s", ticker, exc)
+        logger.warning(
+            "Ticker validation for %s failed after %d attempts -- this may be a temporary "
+            "network or rate-limit issue with the data provider rather than an invalid ticker: %s",
+            ticker, MAX_RETRIES, exc,
+        )
         return False
 
     has_identity = bool(info.get("longName") or info.get("shortName"))
