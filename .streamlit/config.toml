@@ -6,8 +6,16 @@ secondaryBackgroundColor = "#F3E8EE"
 textColor = "#4A4453"
 font = "sans serif"
 
-[server]
-headless = false
-# Not 8501 (Streamlit's default) -- already in use by an unrelated
-# Streamlit app on this machine.
-port = 8517
+[browser]
+gatherUsageStats = false
+
+# Deliberately no [server] section here (no fixed port, no headless
+# setting). This file is committed to the repo and read by BOTH the
+# local launcher and the Streamlit Community Cloud deployment -- a
+# port/headless choice that's only meaningful on the local machine
+# (avoiding a conflict with an unrelated local app) would otherwise
+# make the cloud deployment try to bind the wrong port, which is
+# exactly what breaks Streamlit Cloud's health check (it always checks
+# 127.0.0.1:8501). The local launcher passes --server.port/--server.headless
+# explicitly on the command line instead, which overrides config.toml
+# without needing this file to know it's "local."

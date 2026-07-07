@@ -15,6 +15,6 @@ if curl -s "http://localhost:$PORT/_stcore/health" | grep -q "ok"; then
 else
     source venv/bin/activate
     mkdir -p logs
-    nohup streamlit run dashboard_app.py --server.port "$PORT" >> logs/streamlit.log 2>&1 &
+    nohup streamlit run dashboard_app.py --server.port "$PORT" --server.headless false >> logs/streamlit.log 2>&1 &
     disown
 fi
