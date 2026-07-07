@@ -15,6 +15,14 @@ add_company.py -- the same functions the CLI uses -- and (b) saving
 Watchlist manual-field edits via excel_workbook.update_watchlist_manual_fields.
 No business logic is duplicated here.
 
+Doubles as the source for the Streamlit Community Cloud deployment,
+which reads this same repo's workbook snapshot. That instance sets
+IS_LOCAL_INSTANCE=false in its Secrets, which switches every write
+action (add/remove company, edit Watchlist) off in favor of a read-only
+notice -- the cloud instance's filesystem is ephemeral and has no git
+push access, so an edit made there would silently vanish on next
+redeploy instead of actually persisting.
+
 Run with:
     streamlit run dashboard_app.py
 """
@@ -28,8 +36,9 @@ import streamlit as st
 
 import add_company
 import excel_workbook
+import git_sync
 import tickers
-from config import EXCEL_FILE_PATH
+from config import EXCEL_FILE_PATH, IS_LOCAL_INSTANCE
 
 st.set_page_config(page_title="Investment Research Dashboard", page_icon="📊", layout="wide")
 
@@ -158,25 +167,32 @@ def fmt_compact_currency(value) -> str:
 def render_sidebar() -> None:
     st.sidebar.markdown("## 📊 Investment Dashboard")
 
-    st.sidebar.markdown("### Add a company")
-    with st.sidebar.form("add_company_form", clear_on_submit=True):
-        new_ticker = st.text_input("Ticker symbol", placeholder="e.g. AMD, TSM, SPOT").strip().upper()
-        run_ai = st.checkbox("Generate AI thesis now", value=True, help="Slower and uses an API call, but the full writeup is ready immediately instead of waiting for the next automated sync.")
-        submitted = st.form_submit_button("Add Company", width="stretch")
+    if not IS_LOCAL_INSTANCE:
+        st.sidebar.info(
+            "🌐 **Cloud view (read-only)** -- showing the workbook as of the last sync from the "
+            "local Mac. Add/remove companies and Watchlist edits are only available there."
+        )
 
-    if submitted:
-        if not new_ticker:
-            st.sidebar.warning("Enter a ticker symbol first.")
-        else:
-            with st.spinner(f"Adding {new_ticker} -- fetching financials, valuation, news{', running AI analysis' if run_ai else ''}..."):
-                result = add_company.add_company(new_ticker, run_ai_analysis=run_ai)
-            if result.get("success"):
-                st.sidebar.success(f"Added {new_ticker}")
-                st.cache_data.clear()
-                st.session_state.selected_ticker = new_ticker
-                st.rerun()
+    if IS_LOCAL_INSTANCE:
+        st.sidebar.markdown("### Add a company")
+        with st.sidebar.form("add_company_form", clear_on_submit=True):
+            new_ticker = st.text_input("Ticker symbol", placeholder="e.g. AMD, TSM, SPOT").strip().upper()
+            run_ai = st.checkbox("Generate AI thesis now", value=True, help="Slower and uses an API call, but the full writeup is ready immediately instead of waiting for the next automated sync.")
+            submitted = st.form_submit_button("Add Company", width="stretch")
+
+        if submitted:
+            if not new_ticker:
+                st.sidebar.warning("Enter a ticker symbol first.")
             else:
-                st.sidebar.error(result.get("error", "Failed to add company"))
+                with st.spinner(f"Adding {new_ticker} -- fetching financials, valuation, news{', running AI analysis' if run_ai else ''}..."):
+                    result = add_company.add_company(new_ticker, run_ai_analysis=run_ai)
+                if result.get("success"):
+                    st.sidebar.success(f"Added {new_ticker}")
+                    st.cache_data.clear()
+                    st.session_state.selected_ticker = new_ticker
+                    st.rerun()
+                else:
+                    st.sidebar.error(result.get("error", "Failed to add company"))
 
     st.sidebar.markdown("### Companies")
     records = tickers.get_ticker_records(active_only=True)
@@ -192,14 +208,18 @@ def render_sidebar() -> None:
             with st.sidebar.expander(f"{sector} ({len(recs)})", expanded=(selected in [r["ticker"] for r in recs] if selected else False)):
                 for r in recs:
                     t = r["ticker"]
-                    c1, c2 = st.columns([4, 1])
                     label = f"**{t}**" if t == selected else t
+                    if IS_LOCAL_INSTANCE:
+                        c1, c2 = st.columns([4, 1])
+                    else:
+                        c1 = st.container()
                     if c1.button(label, key=f"select_{t}", width="stretch"):
                         st.session_state.selected_ticker = t
                         st.session_state.view_mode = "company"
                         st.rerun()
-                    if c2.button("🗑", key=f"remove_{t}", help=f"Remove {t} from the tracked universe"):
+                    if IS_LOCAL_INSTANCE and c2.button("🗑", key=f"remove_{t}", help=f"Remove {t} from the tracked universe"):
                         tickers.remove_ticker(t)
+                        git_sync.push_workbook_if_changed(f"Remove {t}")
                         if st.session_state.get("selected_ticker") == t:
                             st.session_state.selected_ticker = None
                         st.cache_data.clear()
@@ -207,7 +227,7 @@ def render_sidebar() -> None:
 
     st.sidebar.divider()
     st.sidebar.markdown("### Workbook")
-    if st.sidebar.button("📂 Open in Excel", width="stretch"):
+    if IS_LOCAL_INSTANCE and st.sidebar.button("📂 Open in Excel", width="stretch"):
         subprocess.run(["open", str(EXCEL_FILE_PATH)])
     if st.sidebar.button("🗂 Browse raw sheets", width="stretch"):
         st.session_state.view_mode = "raw"
@@ -376,6 +396,19 @@ def _safe_float(value) -> float:
 
 def render_watchlist_tab(ticker: str) -> None:
     existing = excel_workbook.get_watchlist_record(ticker) or {}
+
+    if not IS_LOCAL_INSTANCE:
+        st.caption("Read-only here -- edit Watchlist notes from the app on your Mac.")
+        for label, field in [
+            ("Investment Thesis", "investment_thesis"), ("Catalysts", "catalysts"), ("Risks", "risks"),
+            ("Target Price", "target_price"), ("Personal Rating", "personal_rating"), ("Notes", "notes"),
+        ]:
+            value = existing.get(field)
+            if value and pd.notna(value):
+                st.markdown(f"**{label}**")
+                st.write(escape_markdown_math(value))
+        return
+
     with st.form(f"watchlist_{ticker}"):
         thesis = st.text_area("Investment Thesis", value=existing.get("investment_thesis") or "")
         catalysts = st.text_area("Catalysts", value=existing.get("catalysts") or "")
@@ -396,6 +429,7 @@ def render_watchlist_tab(ticker: str) -> None:
             personal_rating=personal_rating or None,
             notes=notes or None,
         )
+        git_sync.push_workbook_if_changed(f"Update Watchlist: {ticker}")
         st.cache_data.clear()
         st.success("Saved.")
         st.rerun()

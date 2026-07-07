@@ -46,6 +46,19 @@ TICKERS_FILE = DATA_DIR / "tickers.json"
 EXCEL_FILE_PATH = Path(os.getenv("EXCEL_FILE_PATH") or (BASE_DIR / "Investment_Research_Dashboard.xlsx"))
 
 # --------------------------------------------------------------------------
+# Deployment mode
+# --------------------------------------------------------------------------
+# True on your local Mac, where the sync automation runs and the workbook
+# is the live, writable source of truth. The Streamlit Community Cloud
+# deployment sets this to "false" via its Secrets panel: that instance's
+# filesystem is ephemeral (wiped on every redeploy) and has no git push
+# access, so dashboard_app.py hides write actions there (add/remove
+# company, edit Watchlist) rather than let edits silently vanish. It's a
+# read-only view of whichever workbook snapshot was last pushed from
+# your Mac via git_sync.py.
+IS_LOCAL_INSTANCE = os.getenv("IS_LOCAL_INSTANCE", "true").lower() == "true"
+
+# --------------------------------------------------------------------------
 # AI provider (used by analysis.py)
 #
 # Provider-agnostic on purpose: analysis.py will select an implementation

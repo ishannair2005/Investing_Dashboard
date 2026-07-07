@@ -31,6 +31,7 @@ from typing import Optional
 
 import tickers
 import valuation
+from config import IS_LOCAL_INSTANCE
 from utils import get_yf_ticker, validate_ticker
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,12 @@ def add_company(ticker: str, run_ai_analysis: bool = True, sync_to_workbook: boo
     summary.update(sync_summary)
     summary["workbook_synced"] = True
     summary["success"] = True
+
+    if IS_LOCAL_INSTANCE:
+        import git_sync  # deferred for the same reason as excel_workbook above
+
+        git_sync.push_workbook_if_changed(f"Add {ticker}")
+
     return summary
 
 

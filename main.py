@@ -24,8 +24,11 @@ import sys
 from typing import Optional
 
 import excel_workbook
+import git_sync
 import tickers
 from add_company import add_company, _print_summary
+from config import IS_LOCAL_INSTANCE
+from utils import today_str
 
 logger = logging.getLogger(__name__)
 
@@ -114,19 +117,22 @@ def main() -> None:
 
     try:
         if args.daily:
+            mode = "Daily"
             results = run_daily(ticker_list, run_ai_analysis=not args.no_ai)
-            _print_run_summary("Daily", results)
         else:  # args.quarterly
+            mode = "Quarterly"
             results = run_quarterly(ticker_list, run_ai_analysis=not args.no_ai)
-            _print_run_summary("Quarterly", results)
-    except (RuntimeError, FileNotFoundError) as exc:
-        # Setup-level failures (missing credentials.json, sheet not
-        # shared with the service account) happen before any per-ticker
-        # try/except gets a chance to run -- surface these as a clean,
-        # actionable message instead of a raw traceback, since this is
-        # the most likely first-run experience.
+        _print_run_summary(mode, results)
+    except RuntimeError as exc:
+        # Setup-level failures (e.g. the workbook is locked open in Excel
+        # and save_workbook() gave up retrying) happen before any
+        # per-ticker try/except gets a chance to run -- surface these as
+        # a clean, actionable message instead of a raw traceback.
         print(f"\nCould not start the sync: {exc}\n")
         sys.exit(1)
+
+    if IS_LOCAL_INSTANCE and results["succeeded"]:
+        git_sync.push_workbook_if_changed(f"{mode} sync: {today_str()}")
 
     # A scheduler should treat "some tickers failed" as a warning, not a
     # fatal run -- per-ticker resilience is the whole point. Exit 1 only
