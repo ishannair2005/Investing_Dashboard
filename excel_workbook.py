@@ -266,6 +266,20 @@ def _get_workbook() -> openpyxl.Workbook:
     return _workbook
 
 
+def reload_workbook() -> None:
+    """Drop the cached in-memory workbook so the next access re-reads it
+    from disk. This module loads the workbook once per process and
+    holds it in memory (_workbook) for the rest of that process's life
+    -- correct for a short-lived CLI run, but a long-running Streamlit
+    session can outlive a `git pull` that changed the file on disk out
+    from under it. git_sync.sync_before_write() calls this right after
+    pulling, so a write action starts from what's actually on GitHub
+    rather than a stale in-process copy.
+    """
+    global _workbook
+    _workbook = None
+
+
 def _get_or_create_worksheet(tab_name: str, headers: list) -> Worksheet:
     wb = _get_workbook()
 

@@ -96,6 +96,15 @@ def add_company(ticker: str, run_ai_analysis: bool = True, sync_to_workbook: boo
         summary["workbook_synced"] = False
         return summary
 
+    import git_sync  # deferred: keeps a --dry-run usable even if the workbook is mid-edit elsewhere
+
+    if not IS_LOCAL_INSTANCE:
+        # A deployed cloud instance's container may have been running for
+        # a while -- pull the latest state (and drop the cached in-memory
+        # workbook) before mutating, so this doesn't clobber a change
+        # pushed from the local Mac or another session since it started.
+        git_sync.sync_before_write()
+
     if existing:  # inactive (previously soft-removed) -- reactivate instead of re-adding
         tickers.reactivate_ticker(ticker)
         logger.info("Reactivated %s in the universe", ticker)
@@ -103,7 +112,7 @@ def add_company(ticker: str, run_ai_analysis: bool = True, sync_to_workbook: boo
         tickers.add_ticker(ticker, name=name, sector=sector)
         logger.info("Registered %s in the universe (sector=%s)", ticker, sector)
 
-    import excel_workbook  # deferred: keeps a --dry-run usable even if the workbook is mid-edit elsewhere
+    import excel_workbook  # deferred for the same reason as git_sync above
 
     logger.info("Initializing workbook and syncing all tabs for %s (this pulls financials, "
                 "ratios, valuation, news%s)...", ticker, ", and generates an AI thesis" if run_ai_analysis else "")
@@ -114,10 +123,7 @@ def add_company(ticker: str, run_ai_analysis: bool = True, sync_to_workbook: boo
     summary["workbook_synced"] = True
     summary["success"] = True
 
-    if IS_LOCAL_INSTANCE:
-        import git_sync  # deferred for the same reason as excel_workbook above
-
-        git_sync.push_workbook_if_changed(f"Add {ticker}")
+    git_sync.push_state_if_changed(f"Add {ticker}")
 
     return summary
 

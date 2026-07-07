@@ -132,7 +132,7 @@ def main() -> None:
         sys.exit(1)
 
     if IS_LOCAL_INSTANCE and results["succeeded"]:
-        git_sync.push_workbook_if_changed(f"{mode} sync: {today_str()}")
+        git_sync.push_state_if_changed(f"{mode} sync: {today_str()}")
 
     # A scheduler should treat "some tickers failed" as a warning, not a
     # fatal run -- per-ticker resilience is the whole point. Exit 1 only

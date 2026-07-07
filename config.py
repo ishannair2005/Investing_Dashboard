@@ -51,12 +51,24 @@ EXCEL_FILE_PATH = Path(os.getenv("EXCEL_FILE_PATH") or (BASE_DIR / "Investment_R
 # True on your local Mac, where the sync automation runs and the workbook
 # is the live, writable source of truth. The Streamlit Community Cloud
 # deployment sets this to "false" via its Secrets panel: that instance's
-# filesystem is ephemeral (wiped on every redeploy) and has no git push
-# access, so dashboard_app.py hides write actions there (add/remove
-# company, edit Watchlist) rather than let edits silently vanish. It's a
-# read-only view of whichever workbook snapshot was last pushed from
-# your Mac via git_sync.py.
+# filesystem is ephemeral (wiped on every restart) and has no cached git
+# credentials, so on its own it couldn't persist a write -- see
+# GITHUB_TOKEN below for how the cloud instance can still write, safely.
 IS_LOCAL_INSTANCE = os.getenv("IS_LOCAL_INSTANCE", "true").lower() == "true"
+
+# A GitHub fine-grained Personal Access Token (repo-scoped, Contents:
+# read/write only), set as a Secret on the Streamlit Community Cloud
+# deployment specifically so that instance can commit+push on its own --
+# it has no local git credential cache the way your Mac does. Locally,
+# leave this unset; git_sync.py falls back to a plain `git push` using
+# your already-authenticated local credentials.
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_REPO = os.getenv("GITHUB_REPO", "ishannair2005/Investing_Dashboard")
+
+# Whether dashboard_app.py shows write actions (add/remove company, edit
+# Watchlist) at all: yes locally, and yes on any instance -- including a
+# deployed one -- that has a way to persist the change back to GitHub.
+CAN_EDIT_REMOTELY = IS_LOCAL_INSTANCE or bool(GITHUB_TOKEN)
 
 # --------------------------------------------------------------------------
 # AI provider (used by analysis.py)

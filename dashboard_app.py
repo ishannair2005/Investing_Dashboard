@@ -17,11 +17,14 @@ No business logic is duplicated here.
 
 Doubles as the source for the Streamlit Community Cloud deployment,
 which reads this same repo's workbook snapshot. That instance sets
-IS_LOCAL_INSTANCE=false in its Secrets, which switches every write
-action (add/remove company, edit Watchlist) off in favor of a read-only
-notice -- the cloud instance's filesystem is ephemeral and has no git
-push access, so an edit made there would silently vanish on next
-redeploy instead of actually persisting.
+IS_LOCAL_INSTANCE=false in its Secrets. Write actions (add/remove
+company, edit Watchlist) are still available there as long as
+GITHUB_TOKEN is also set (config.CAN_EDIT_REMOTELY) -- the cloud
+instance's filesystem is ephemeral and has no cached git credentials of
+its own, so git_sync.py pushes on its behalf using that token instead.
+Without a token, write actions are hidden and it's read-only, since an
+edit made there would otherwise silently vanish on next redeploy rather
+than actually persisting.
 
 Run with:
     streamlit run dashboard_app.py
@@ -38,7 +41,7 @@ import add_company
 import excel_workbook
 import git_sync
 import tickers
-from config import EXCEL_FILE_PATH, IS_LOCAL_INSTANCE
+from config import CAN_EDIT_REMOTELY, EXCEL_FILE_PATH, IS_LOCAL_INSTANCE
 
 st.set_page_config(page_title="Investment Research Dashboard", page_icon="📊", layout="wide")
 
@@ -168,12 +171,18 @@ def render_sidebar() -> None:
     st.sidebar.markdown("## 📊 Investment Dashboard")
 
     if not IS_LOCAL_INSTANCE:
-        st.sidebar.info(
-            "🌐 **Cloud view (read-only)** -- showing the workbook as of the last sync from the "
-            "local Mac. Add/remove companies and Watchlist edits are only available there."
-        )
+        if CAN_EDIT_REMOTELY:
+            st.sidebar.info(
+                "🌐 **Cloud instance** -- changes here are committed and pushed to GitHub, which "
+                "briefly reloads this app to pick them up."
+            )
+        else:
+            st.sidebar.info(
+                "🌐 **Cloud view (read-only)** -- showing the workbook as of the last sync from the "
+                "local Mac. Add/remove companies and Watchlist edits are only available there."
+            )
 
-    if IS_LOCAL_INSTANCE:
+    if CAN_EDIT_REMOTELY:
         st.sidebar.markdown("### Add a company")
         with st.sidebar.form("add_company_form", clear_on_submit=True):
             new_ticker = st.text_input("Ticker symbol", placeholder="e.g. AMD, TSM, SPOT").strip().upper()
@@ -185,6 +194,8 @@ def render_sidebar() -> None:
                 st.sidebar.warning("Enter a ticker symbol first.")
             else:
                 with st.spinner(f"Adding {new_ticker} -- fetching financials, valuation, news{', running AI analysis' if run_ai else ''}..."):
+                    if not IS_LOCAL_INSTANCE:
+                        git_sync.sync_before_write()
                     result = add_company.add_company(new_ticker, run_ai_analysis=run_ai)
                 if result.get("success"):
                     st.sidebar.success(f"Added {new_ticker}")
@@ -209,7 +220,7 @@ def render_sidebar() -> None:
                 for r in recs:
                     t = r["ticker"]
                     label = f"**{t}**" if t == selected else t
-                    if IS_LOCAL_INSTANCE:
+                    if CAN_EDIT_REMOTELY:
                         c1, c2 = st.columns([4, 1])
                     else:
                         c1 = st.container()
@@ -217,9 +228,11 @@ def render_sidebar() -> None:
                         st.session_state.selected_ticker = t
                         st.session_state.view_mode = "company"
                         st.rerun()
-                    if IS_LOCAL_INSTANCE and c2.button("🗑", key=f"remove_{t}", help=f"Remove {t} from the tracked universe"):
+                    if CAN_EDIT_REMOTELY and c2.button("🗑", key=f"remove_{t}", help=f"Remove {t} from the tracked universe"):
+                        if not IS_LOCAL_INSTANCE:
+                            git_sync.sync_before_write()
                         tickers.remove_ticker(t)
-                        git_sync.push_workbook_if_changed(f"Remove {t}")
+                        git_sync.push_state_if_changed(f"Remove {t}")
                         if st.session_state.get("selected_ticker") == t:
                             st.session_state.selected_ticker = None
                         st.cache_data.clear()
@@ -397,7 +410,7 @@ def _safe_float(value) -> float:
 def render_watchlist_tab(ticker: str) -> None:
     existing = excel_workbook.get_watchlist_record(ticker) or {}
 
-    if not IS_LOCAL_INSTANCE:
+    if not CAN_EDIT_REMOTELY:
         st.caption("Read-only here -- edit Watchlist notes from the app on your Mac.")
         for label, field in [
             ("Investment Thesis", "investment_thesis"), ("Catalysts", "catalysts"), ("Risks", "risks"),
@@ -420,6 +433,8 @@ def render_watchlist_tab(ticker: str) -> None:
         save = st.form_submit_button("Save")
 
     if save:
+        if not IS_LOCAL_INSTANCE:
+            git_sync.sync_before_write()
         excel_workbook.update_watchlist_manual_fields(
             ticker,
             investment_thesis=thesis or None,
@@ -429,7 +444,7 @@ def render_watchlist_tab(ticker: str) -> None:
             personal_rating=personal_rating or None,
             notes=notes or None,
         )
-        git_sync.push_workbook_if_changed(f"Update Watchlist: {ticker}")
+        git_sync.push_state_if_changed(f"Update Watchlist: {ticker}")
         st.cache_data.clear()
         st.success("Saved.")
         st.rerun()
