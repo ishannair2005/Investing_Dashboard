@@ -187,5 +187,12 @@
     "sector": "Communication Services",
     "added_date": "2026-07-07",
     "active": false
+  },
+  {
+    "ticker": "DIS",
+    "name": "The Walt Disney Company",
+    "sector": "Communication Services",
+    "added_date": "2026-07-07",
+    "active": true
   }
 ]
