@@ -149,6 +149,20 @@ def escape_markdown_math(text) -> str:
     return str(text).replace("$", "\\$")
 
 
+def escape_html_text(text) -> str:
+    """Like escape_markdown_math(), plus collapses embedded newlines to
+    spaces. Use this specifically for text interpolated into a raw HTML
+    block (news headline/summary, company description) rather than
+    passed to a plain st.write() -- a blank/whitespace-only line in the
+    middle of an st.markdown(..., unsafe_allow_html=True) block breaks
+    Streamlit's HTML passthrough, so anything embedded there needs to
+    be a single line. Not used for narrative paragraphs (AI Analysis
+    tab, Overview's thesis excerpt), which go through plain st.write()
+    and should keep their paragraph breaks for readability.
+    """
+    return " ".join(escape_markdown_math(text).split())
+
+
 def fmt_compact_currency(value) -> str:
     """Abbreviated $ notation (e.g. "$4.61T") for tight metric-card
     layouts, where format_value_for_display's fully comma-grouped
@@ -282,7 +296,7 @@ def render_overview_tab(sheets: dict, ticker: str) -> None:
     st.markdown(sector_badge + industry_badge, unsafe_allow_html=True)
 
     if dash_row.get("description"):
-        st.markdown(f'<p class="company-desc">{escape_markdown_math(dash_row["description"])}</p>', unsafe_allow_html=True)
+        st.markdown(f'<p class="company-desc">{escape_html_text(dash_row["description"])}</p>', unsafe_allow_html=True)
 
     st.write("")
     cols = st.columns(6)
@@ -339,11 +353,11 @@ def render_news_tab(sheets: dict, ticker: str) -> None:
         return
     df = df.sort_values("date", ascending=False)
     for _, item in df.iterrows():
-        headline = escape_markdown_math(item.get("headline") or "(untitled)")
+        headline = escape_html_text(item.get("headline") or "(untitled)")
         link = item.get("link") or "#"
         summary = item.get("ai_summary")
         summary_html = (
-            f'<div class="news-summary">{escape_markdown_math(summary)}</div>' if summary and pd.notna(summary) else ""
+            f'<div class="news-summary">{escape_html_text(summary)}</div>' if summary and pd.notna(summary) else ""
         )
         sentiment = item.get("sentiment")
         category = item.get("category")
@@ -354,14 +368,21 @@ def render_news_tab(sheets: dict, ticker: str) -> None:
             badges += badge(category, CATEGORY_COLOR)
         publisher = item.get("publisher") or ""
         date = fmt("date", item.get("date"))
-        st.markdown(
-            f"""<div class="news-card">
-                <a href="{link}" target="_blank">{headline}</a>
-                {summary_html}
-                <div>{badges}<span class="news-meta">{publisher} &middot; {date}</span></div>
-            </div>""",
-            unsafe_allow_html=True,
+        # Built as one unbroken line, not a multi-line f-string: a blank
+        # line in the middle of a raw HTML block (e.g. from an empty
+        # summary_html when a headline has no AI summary yet) makes
+        # Streamlit's markdown renderer treat what follows as a fresh
+        # block -- and since it's indented, that means an escaped code
+        # block instead of parsed HTML. See the news-card rendering bug
+        # this fixed: raw <div>/<span> tags showing up as literal text.
+        card_html = (
+            f'<div class="news-card">'
+            f'<a href="{link}" target="_blank">{headline}</a>'
+            f'{summary_html}'
+            f'<div>{badges}<span class="news-meta">{publisher} &middot; {date}</span></div>'
+            f'</div>'
         )
+        st.markdown(card_html, unsafe_allow_html=True)
 
 
 NARRATIVE_SECTIONS = [
