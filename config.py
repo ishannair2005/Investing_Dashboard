@@ -83,6 +83,15 @@ AI_MODEL = os.getenv("AI_MODEL", "claude-opus-4-8")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# Separate from REQUEST_TIMEOUT_SECONDS below: both provider SDKs default
+# to a multi-minute internal timeout per attempt, and the full investment
+# thesis (max_tokens=4096) can legitimately take a while to generate, so
+# this needs more headroom than the lightweight yfinance-style calls
+# REQUEST_TIMEOUT_SECONDS is tuned for. Still far short of the SDKs' own
+# defaults -- bounds a stalled request (e.g. a laptop waking from sleep
+# mid-call) to a few minutes total across retries instead of 20-30+.
+AI_REQUEST_TIMEOUT_SECONDS = int(os.getenv("AI_REQUEST_TIMEOUT_SECONDS", 120))
+
 # --------------------------------------------------------------------------
 # Network / retry behavior (shared by financials.py, valuation.py, news.py, ...)
 # --------------------------------------------------------------------------

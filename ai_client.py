@@ -16,7 +16,7 @@ identically instead of one.
 import logging
 from typing import Optional
 
-from config import AI_MODEL, AI_PROVIDER, ANTHROPIC_API_KEY, OPENAI_API_KEY
+from config import AI_MODEL, AI_PROVIDER, AI_REQUEST_TIMEOUT_SECONDS, ANTHROPIC_API_KEY, OPENAI_API_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,16 @@ def _generate_anthropic(prompt: str, system: Optional[str], max_tokens: int) -> 
         raise RuntimeError("ANTHROPIC_API_KEY is not set (required when AI_PROVIDER=anthropic)")
     import anthropic
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    # Both SDKs default to a multi-minute internal timeout per attempt.
+    # Combined with utils.retry()'s multiple attempts, a single stalled
+    # connection (e.g. a laptop waking from sleep mid-request) could
+    # block an entire automation run for 20-30+ minutes on one ticker
+    # before ever failing over to the next -- this is what actually
+    # happened during a scheduled run that hung on COST for 23+ minutes.
+    # Bounding this to AI_REQUEST_TIMEOUT_SECONDS lets a stuck request
+    # fail fast enough for our own retry/backoff and the per-ticker
+    # try/except in main.py to do their job.
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=AI_REQUEST_TIMEOUT_SECONDS)
     kwargs = {"model": AI_MODEL, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}]}
     if system:
         kwargs["system"] = system
@@ -53,7 +62,7 @@ def _generate_openai(prompt: str, system: Optional[str], max_tokens: int) -> str
         raise RuntimeError("OPENAI_API_KEY is not set (required when AI_PROVIDER=openai)")
     import openai
 
-    client = openai.OpenAI(api_key=OPENAI_API_KEY)
+    client = openai.OpenAI(api_key=OPENAI_API_KEY, timeout=AI_REQUEST_TIMEOUT_SECONDS)
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
