@@ -42,6 +42,7 @@ import excel_workbook
 import git_sync
 import tickers
 from config import CAN_EDIT_REMOTELY, EXCEL_FILE_PATH, IS_LOCAL_INSTANCE
+from utils import WRITE_LOCK
 
 st.set_page_config(page_title="Investment Research Dashboard", page_icon="📊", layout="wide")
 
@@ -208,8 +209,10 @@ def render_sidebar() -> None:
                 st.sidebar.warning("Enter a ticker symbol first.")
             else:
                 with st.spinner(f"Adding {new_ticker} -- fetching financials, valuation, news{', running AI analysis' if run_ai else ''}..."):
-                    if not IS_LOCAL_INSTANCE:
-                        git_sync.sync_before_write()
+                    # add_company() handles pull-before-write + the whole
+                    # sync + push atomically under WRITE_LOCK internally
+                    # -- no separate call needed here (and doing it here,
+                    # outside that lock, would defeat the point of it).
                     result = add_company.add_company(new_ticker, run_ai_analysis=run_ai)
                 if result.get("success"):
                     st.sidebar.success(f"Added {new_ticker}")
@@ -243,10 +246,15 @@ def render_sidebar() -> None:
                         st.session_state.view_mode = "company"
                         st.rerun()
                     if CAN_EDIT_REMOTELY and c2.button("🗑", key=f"remove_{t}", help=f"Remove {t} from the tracked universe"):
-                        if not IS_LOCAL_INSTANCE:
-                            git_sync.sync_before_write()
-                        tickers.remove_ticker(t)
-                        git_sync.push_state_if_changed(f"Remove {t}")
+                        # One lock across pull+reload -> remove -> push,
+                        # not three separate acquisitions -- see the
+                        # comment in add_company.add_company() for why
+                        # that gap matters (it's the same risk here).
+                        with WRITE_LOCK:
+                            if not IS_LOCAL_INSTANCE:
+                                git_sync.sync_before_write()
+                            tickers.remove_ticker(t)
+                            git_sync.push_state_if_changed(f"Remove {t}")
                         if st.session_state.get("selected_ticker") == t:
                             st.session_state.selected_ticker = None
                         st.cache_data.clear()
@@ -454,18 +462,21 @@ def render_watchlist_tab(ticker: str) -> None:
         save = st.form_submit_button("Save")
 
     if save:
-        if not IS_LOCAL_INSTANCE:
-            git_sync.sync_before_write()
-        excel_workbook.update_watchlist_manual_fields(
-            ticker,
-            investment_thesis=thesis or None,
-            catalysts=catalysts or None,
-            risks=risks or None,
-            target_price=target_price or None,
-            personal_rating=personal_rating or None,
-            notes=notes or None,
-        )
-        git_sync.push_state_if_changed(f"Update Watchlist: {ticker}")
+        # One lock across pull+reload -> write -> push, same reasoning
+        # as add_company.add_company() and the remove-company handler.
+        with WRITE_LOCK:
+            if not IS_LOCAL_INSTANCE:
+                git_sync.sync_before_write()
+            excel_workbook.update_watchlist_manual_fields(
+                ticker,
+                investment_thesis=thesis or None,
+                catalysts=catalysts or None,
+                risks=risks or None,
+                target_price=target_price or None,
+                personal_rating=personal_rating or None,
+                notes=notes or None,
+            )
+            git_sync.push_state_if_changed(f"Update Watchlist: {ticker}")
         st.cache_data.clear()
         st.success("Saved.")
         st.rerun()

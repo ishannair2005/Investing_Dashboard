@@ -104,33 +104,50 @@ def add_company(ticker: str, run_ai_analysis: bool = True, sync_to_workbook: boo
         return summary
 
     import git_sync  # deferred: keeps a --dry-run usable even if the workbook is mid-edit elsewhere
+    import excel_workbook  # deferred for the same reason
+    from utils import WRITE_LOCK
 
-    if not IS_LOCAL_INSTANCE:
-        # A deployed cloud instance's container may have been running for
-        # a while -- pull the latest state (and drop the cached in-memory
-        # workbook) before mutating, so this doesn't clobber a change
-        # pushed from the local Mac or another session since it started.
-        git_sync.sync_before_write()
+    # One lock held across the whole "register + sync" sequence, not a
+    # separate acquisition per step. Previously each step (pull+reload,
+    # register ticker, sync tabs) locked independently, which left gaps
+    # where a *different* concurrent add's pull-and-reload could swap
+    # out the in-memory workbook mid-sequence for this one -- splitting
+    # a single ticker's writes across two different Workbook objects and
+    # silently losing whatever was written to the first. This was very
+    # likely the real trigger behind a production segfault, not just a
+    # data-loss bug: two threads holding references to different
+    # generations of a non-thread-safe openpyxl object at once.
+    with WRITE_LOCK:
+        if not IS_LOCAL_INSTANCE:
+            # A deployed cloud instance's container may have been running
+            # for a while -- pull the latest state (and drop the cached
+            # in-memory workbook) before mutating, so this doesn't
+            # clobber a change pushed from the local Mac or another
+            # session since it started.
+            git_sync.sync_before_write()
 
-    if existing:  # inactive (previously soft-removed) -- reactivate instead of re-adding
-        tickers.reactivate_ticker(ticker)
-        logger.info("Reactivated %s in the universe", ticker)
-    else:
-        tickers.add_ticker(ticker, name=name, sector=sector)
-        logger.info("Registered %s in the universe (sector=%s)", ticker, sector)
+        if existing:  # inactive (previously soft-removed) -- reactivate instead of re-adding
+            tickers.reactivate_ticker(ticker)
+            logger.info("Reactivated %s in the universe", ticker)
+        else:
+            tickers.add_ticker(ticker, name=name, sector=sector)
+            logger.info("Registered %s in the universe (sector=%s)", ticker, sector)
 
-    import excel_workbook  # deferred for the same reason as git_sync above
-
-    logger.info("Initializing workbook and syncing all tabs for %s (this pulls financials, "
-                "ratios, valuation, news%s)...", ticker, ", and generates an AI thesis" if run_ai_analysis else "")
-    excel_workbook.initialize_workbook()
-    sync_summary = excel_workbook.sync_ticker_full(ticker, run_ai_analysis=run_ai_analysis)
+        logger.info("Initializing workbook and syncing all tabs for %s (this pulls financials, "
+                    "ratios, valuation, news%s)...", ticker, ", and generates an AI thesis" if run_ai_analysis else "")
+        excel_workbook.initialize_workbook()
+        # Held for the full sync, including its network/AI calls, not
+        # just the writes -- see the comment above the outer `with`.
+        # Slower for two concurrent adds (they now fully serialize
+        # instead of overlapping their fetches), but this is a personal/
+        # small-team tool: an extra 30-60s wait is a much better outcome
+        # than a segfault or silently losing a ticker's data.
+        sync_summary = excel_workbook.sync_ticker_full(ticker, run_ai_analysis=run_ai_analysis)
+        git_sync.push_state_if_changed(f"Add {ticker}")
 
     summary.update(sync_summary)
     summary["workbook_synced"] = True
     summary["success"] = True
-
-    git_sync.push_state_if_changed(f"Add {ticker}")
 
     return summary
 
