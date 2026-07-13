@@ -1,9 +1,14 @@
-pandas
-numpy
-yfinance
-requests
-openpyxl
-python-dotenv
-anthropic
-openai
-streamlit
+# Pinned to exact versions verified locally -- version drift between
+# local testing and the deployed environment's own dependency
+# resolution was a real, confirmed contributing factor to a production
+# segfault (see excel_workbook.py's lxml-blocking comment). Pinning
+# means "works locally" and "works deployed" are testing the same code.
+pandas==3.0.3
+numpy==2.5.1
+yfinance==1.5.1
+requests==2.34.2
+openpyxl==3.1.5
+python-dotenv==1.2.2
+anthropic==0.116.0
+openai==2.44.0
+streamlit==1.59.0

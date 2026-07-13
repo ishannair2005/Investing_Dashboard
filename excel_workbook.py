@@ -39,8 +39,29 @@ it belongs to main.py/add_company.py.
 import datetime as dt
 import logging
 import os
+import sys
 import time
 from typing import Optional
+
+# openpyxl auto-detects and prefers lxml (a C extension) over its own
+# pure-Python XML parser when lxml happens to be installed -- and it's
+# only ever an optional accelerator, never declared as a hard dependency
+# by anything in requirements.txt, so whether it's actually present
+# depends on the deployment environment's own dependency resolution,
+# not anything we control directly. That's a real risk: a segfault in
+# production kept recurring even after fixing two confirmed, verified
+# bugs (unbounded conditional-formatting growth, non-atomic saves), and
+# local testing never once exercised the lxml code path at all (lxml
+# isn't installed in this project's local venv) -- meaning if the cloud
+# environment does have it, every local verification of "this works"
+# was against a different parser than what's actually crashing.
+# Blocking the import forces openpyxl onto its pure-Python parser
+# everywhere in this process (including pandas.read_excel(engine=
+# "openpyxl") in dashboard_app.py, since this module is imported before
+# any read_excel call happens) -- immune to C-extension segfaults by
+# construction. Must happen before openpyxl is imported anywhere, since
+# openpyxl's lxml-or-not choice is made once and cached at that point.
+sys.modules["lxml"] = None
 
 import openpyxl
 import pandas as pd
