@@ -43,6 +43,7 @@ from typing import Optional
 
 import openpyxl
 import pandas as pd
+from openpyxl.formatting.formatting import ConditionalFormattingList
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -398,6 +399,17 @@ def _style_dashboard(ws: Worksheet) -> None:
     rating_col = DASHBOARD_HEADERS.index("valuation_rating") + 1
     rating_letter = get_column_letter(rating_col)
     last_row = ws.max_row
+
+    # save_workbook() -> _apply_all_styling() -> this function runs on
+    # EVERY save (once per ticker synced), and ws.conditional_formatting
+    # has no public clear/remove API -- only .add(). Without resetting
+    # it first, every save silently appended 3 more duplicate rules on
+    # top of whatever was already there. That went unnoticed locally but
+    # compounded over hundreds of saves in production into 501
+    # overlapping rules on one range, which is very likely what caused
+    # a segfault on the deployed app: openpyxl/lxml choking while
+    # parsing that much redundant conditional-formatting XML on load.
+    ws.conditional_formatting = ConditionalFormattingList()
 
     rating_colors = {"Undervalued": "C6EFCE", "Overvalued": "FFC7CE", "Fairly Valued": "FFEB9C"}
     for rating, color in rating_colors.items():
