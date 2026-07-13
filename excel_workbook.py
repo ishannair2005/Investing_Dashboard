@@ -38,6 +38,7 @@ it belongs to main.py/add_company.py.
 
 import datetime as dt
 import logging
+import os
 import time
 from typing import Optional
 
@@ -436,7 +437,20 @@ def _apply_all_styling() -> None:
 
 def save_workbook(retries: int = 3, backoff_seconds: float = 1.0) -> None:
     """Apply presentation styling, then persist the in-memory workbook
-    to disk.
+    to disk atomically.
+
+    Writes to a temp file in the same directory, then os.replace()'s it
+    into place, rather than wb.save(EXCEL_FILE_PATH) directly. .xlsx is
+    a ZIP archive under the hood, and writing one takes long enough
+    (several hundred KB, multiple sheets) that a reader with no
+    synchronization against this write -- dashboard_app.py's
+    pandas-based load_workbook(), used by every page render, never
+    acquires WRITE_LOCK -- could open the file mid-write and get a
+    truncated ZIP/XML, which is exactly the kind of thing that segfaults
+    openpyxl's underlying lxml parser rather than raising a clean
+    Python error. os.replace() is atomic at the OS/filesystem level: a
+    concurrent reader always sees either the complete old file or the
+    complete new one, never a partial write.
 
     Retries briefly on PermissionError -- the most common real-world
     cause is the file being open in Excel, and macOS/Windows can both
@@ -447,10 +461,12 @@ def save_workbook(retries: int = 3, backoff_seconds: float = 1.0) -> None:
     with WRITE_LOCK:
         wb = _get_workbook()
         _apply_all_styling()
+        tmp_path = f"{EXCEL_FILE_PATH}.tmp"
         last_exc = None
         for attempt in range(1, retries + 1):
             try:
-                wb.save(EXCEL_FILE_PATH)
+                wb.save(tmp_path)
+                os.replace(tmp_path, EXCEL_FILE_PATH)
                 logger.info("Saved workbook to %s", EXCEL_FILE_PATH)
                 return
             except PermissionError as exc:
