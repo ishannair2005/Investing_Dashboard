@@ -57,7 +57,7 @@ import tickers
 import valuation
 from analysis import NARRATIVE_FIELDS
 from config import EXCEL_FILE_PATH
-from utils import today_str
+from utils import WRITE_LOCK, today_str
 
 logger = logging.getLogger(__name__)
 
@@ -254,16 +254,17 @@ def _get_workbook() -> openpyxl.Workbook:
     account's Drive" problem to avoid.
     """
     global _workbook
-    if _workbook is not None:
-        return _workbook
+    with WRITE_LOCK:
+        if _workbook is not None:
+            return _workbook
 
-    if EXCEL_FILE_PATH.exists():
-        _workbook = openpyxl.load_workbook(EXCEL_FILE_PATH)
-        logger.info("Loaded existing workbook: %s", EXCEL_FILE_PATH)
-    else:
-        _workbook = openpyxl.Workbook()
-        logger.info("Starting new workbook: %s", EXCEL_FILE_PATH)
-    return _workbook
+        if EXCEL_FILE_PATH.exists():
+            _workbook = openpyxl.load_workbook(EXCEL_FILE_PATH)
+            logger.info("Loaded existing workbook: %s", EXCEL_FILE_PATH)
+        else:
+            _workbook = openpyxl.Workbook()
+            logger.info("Starting new workbook: %s", EXCEL_FILE_PATH)
+        return _workbook
 
 
 def reload_workbook() -> None:
@@ -277,7 +278,8 @@ def reload_workbook() -> None:
     rather than a stale in-process copy.
     """
     global _workbook
-    _workbook = None
+    with WRITE_LOCK:
+        _workbook = None
 
 
 def _get_or_create_worksheet(tab_name: str, headers: list) -> Worksheet:
@@ -335,9 +337,10 @@ def initialize_workbook() -> None:
     """Ensure every tab from ALL_TABS exists with its header row.
     Idempotent -- safe to call at the start of every run. Does not save
     to disk by itself; sync_ticker_full()/save_workbook() do that."""
-    for tab_name, headers in ALL_TABS.items():
-        _get_or_create_worksheet(tab_name, headers)
-    logger.info("Workbook initialized: %s", ", ".join(ALL_TABS))
+    with WRITE_LOCK:
+        for tab_name, headers in ALL_TABS.items():
+            _get_or_create_worksheet(tab_name, headers)
+        logger.info("Workbook initialized: %s", ", ".join(ALL_TABS))
 
 
 # --------------------------------------------------------------------------
@@ -429,22 +432,23 @@ def save_workbook(retries: int = 3, backoff_seconds: float = 1.0) -> None:
     still locked after retrying, fail with an actionable message rather
     than a raw OS error.
     """
-    wb = _get_workbook()
-    _apply_all_styling()
-    last_exc = None
-    for attempt in range(1, retries + 1):
-        try:
-            wb.save(EXCEL_FILE_PATH)
-            logger.info("Saved workbook to %s", EXCEL_FILE_PATH)
-            return
-        except PermissionError as exc:
-            last_exc = exc
-            if attempt < retries:
-                time.sleep(backoff_seconds)
-    raise RuntimeError(
-        f"Could not save {EXCEL_FILE_PATH} -- it may be open in Excel. "
-        f"Close the file and try again."
-    ) from last_exc
+    with WRITE_LOCK:
+        wb = _get_workbook()
+        _apply_all_styling()
+        last_exc = None
+        for attempt in range(1, retries + 1):
+            try:
+                wb.save(EXCEL_FILE_PATH)
+                logger.info("Saved workbook to %s", EXCEL_FILE_PATH)
+                return
+            except PermissionError as exc:
+                last_exc = exc
+                if attempt < retries:
+                    time.sleep(backoff_seconds)
+        raise RuntimeError(
+            f"Could not save {EXCEL_FILE_PATH} -- it may be open in Excel. "
+            f"Close the file and try again."
+        ) from last_exc
 
 
 # --------------------------------------------------------------------------
@@ -547,18 +551,19 @@ def sync_financials(ticker: str, financials_df: Optional[pd.DataFrame] = None) -
     fetch) to avoid a redundant yfinance call.
     """
     ticker = ticker.upper()
-    ws = _get_or_create_worksheet(FINANCIALS_TAB, FINANCIALS_HEADERS)
-    existing = _existing_quarters(ticker)
+    with WRITE_LOCK:
+        ws = _get_or_create_worksheet(FINANCIALS_TAB, FINANCIALS_HEADERS)
+        existing = _existing_quarters(ticker)
 
-    new_quarters_df = financials.get_new_quarters(ticker, existing, df=financials_df)
-    if new_quarters_df.empty:
-        logger.info("Financials: no new quarters for %s", ticker)
-        return 0
+        new_quarters_df = financials.get_new_quarters(ticker, existing, df=financials_df)
+        if new_quarters_df.empty:
+            logger.info("Financials: no new quarters for %s", ticker)
+            return 0
 
-    for record in new_quarters_df.to_dict(orient="records"):
-        _append_row(ws, _row_from_dict(record, FINANCIALS_HEADERS), FINANCIALS_HEADERS)
-    logger.info("Financials: appended %d new quarter(s) for %s", len(new_quarters_df), ticker)
-    return len(new_quarters_df)
+        for record in new_quarters_df.to_dict(orient="records"):
+            _append_row(ws, _row_from_dict(record, FINANCIALS_HEADERS), FINANCIALS_HEADERS)
+        logger.info("Financials: appended %d new quarter(s) for %s", len(new_quarters_df), ticker)
+        return len(new_quarters_df)
 
 
 # --------------------------------------------------------------------------
@@ -574,24 +579,29 @@ def sync_ratios(ticker: str, financials_df: Optional[pd.DataFrame] = None) -> in
     call when sync_financials() already fetched it this run.
     """
     ticker = ticker.upper()
-    ws = _get_or_create_worksheet(RATIOS_TAB, RATIOS_HEADERS)
-    existing = _existing_ratio_quarters(ticker)
-
+    # Fetch outside the lock -- only a fallback when the caller didn't
+    # already pass financials_df (sync_ticker_full always does), but if
+    # it does trigger, it's a network call that shouldn't hold up other
+    # threads' writes.
     fin_df = financials_df if financials_df is not None else financials.get_quarterly_financials(ticker)
     ratios_df = ratios.compute_ratios(fin_df)
     if ratios_df.empty:
         logger.info("Ratios: no data for %s", ticker)
         return 0
 
-    new_ratios_df = ratios_df[~ratios_df["quarter"].isin(existing)]
-    if new_ratios_df.empty:
-        logger.info("Ratios: no new quarters for %s", ticker)
-        return 0
+    with WRITE_LOCK:
+        ws = _get_or_create_worksheet(RATIOS_TAB, RATIOS_HEADERS)
+        existing = _existing_ratio_quarters(ticker)
 
-    for record in new_ratios_df.to_dict(orient="records"):
-        _append_row(ws, _row_from_dict(record, RATIOS_HEADERS), RATIOS_HEADERS)
-    logger.info("Ratios: appended %d new quarter(s) for %s", len(new_ratios_df), ticker)
-    return len(new_ratios_df)
+        new_ratios_df = ratios_df[~ratios_df["quarter"].isin(existing)]
+        if new_ratios_df.empty:
+            logger.info("Ratios: no new quarters for %s", ticker)
+            return 0
+
+        for record in new_ratios_df.to_dict(orient="records"):
+            _append_row(ws, _row_from_dict(record, RATIOS_HEADERS), RATIOS_HEADERS)
+        logger.info("Ratios: appended %d new quarter(s) for %s", len(new_ratios_df), ticker)
+        return len(new_ratios_df)
 
 
 # --------------------------------------------------------------------------
@@ -600,19 +610,21 @@ def sync_ratios(ticker: str, financials_df: Optional[pd.DataFrame] = None) -> in
 
 def upsert_valuation(ticker: str, snapshot: Optional[dict] = None) -> None:
     ticker = ticker.upper()
-    ws = _get_or_create_worksheet(VALUATION_TAB, VALUATION_HEADERS)
+    # Fetch outside the lock for the same reason as sync_ratios above.
     snapshot = snapshot if snapshot is not None else valuation.get_valuation_snapshot(ticker)
     if not snapshot:
         logger.warning("Valuation: no data for %s -- skipping upsert", ticker)
         return
 
-    row = _row_from_dict(snapshot, VALUATION_HEADERS)
-    row_number = _find_row_number(ws, ticker)
-    if row_number:
-        _write_row_at(ws, row_number, row, VALUATION_HEADERS)
-    else:
-        _append_row(ws, row, VALUATION_HEADERS)
-    logger.info("Valuation: upserted %s", ticker)
+    with WRITE_LOCK:
+        ws = _get_or_create_worksheet(VALUATION_TAB, VALUATION_HEADERS)
+        row = _row_from_dict(snapshot, VALUATION_HEADERS)
+        row_number = _find_row_number(ws, ticker)
+        if row_number:
+            _write_row_at(ws, row_number, row, VALUATION_HEADERS)
+        else:
+            _append_row(ws, row, VALUATION_HEADERS)
+        logger.info("Valuation: upserted %s", ticker)
 
 
 # --------------------------------------------------------------------------
@@ -624,9 +636,11 @@ def sync_news(ticker: str, news_df: Optional[pd.DataFrame] = None) -> int:
     re-running (paid) AI classification on the same headlines twice in
     one run -- see sync_ticker_full."""
     ticker = ticker.upper()
-    ws = _get_or_create_worksheet(NEWS_TAB, NEWS_HEADERS)
-    existing_links = _existing_news_links(ticker)
+    with WRITE_LOCK:
+        existing_links = _existing_news_links(ticker)
 
+    # Fetch outside the lock (only triggers when news_df wasn't already
+    # provided) for the same reason as sync_ratios/upsert_valuation above.
     if news_df is None:
         new_news_df = news.get_new_news(ticker, existing_links)
     elif news_df.empty:
@@ -638,10 +652,12 @@ def sync_news(ticker: str, news_df: Optional[pd.DataFrame] = None) -> int:
         logger.info("News: no new items for %s", ticker)
         return 0
 
-    for record in new_news_df.to_dict(orient="records"):
-        _append_row(ws, _row_from_dict(record, NEWS_HEADERS), NEWS_HEADERS)
-    logger.info("News: appended %d new item(s) for %s", len(new_news_df), ticker)
-    return len(new_news_df)
+    with WRITE_LOCK:
+        ws = _get_or_create_worksheet(NEWS_TAB, NEWS_HEADERS)
+        for record in new_news_df.to_dict(orient="records"):
+            _append_row(ws, _row_from_dict(record, NEWS_HEADERS), NEWS_HEADERS)
+        logger.info("News: appended %d new item(s) for %s", len(new_news_df), ticker)
+        return len(new_news_df)
 
 
 # --------------------------------------------------------------------------
@@ -653,8 +669,9 @@ def get_latest_narrative(ticker: str) -> Optional[dict]:
     analysis.generate_analysis() as `previous_analysis` so the model can
     identify what materially changed since last time."""
     ticker = ticker.upper()
-    ws = _get_or_create_worksheet(NARRATIVE_TAB, NARRATIVE_HEADERS)
-    records = [r for r in _get_all_records(ws, NARRATIVE_HEADERS) if r.get("ticker") == ticker]
+    with WRITE_LOCK:
+        ws = _get_or_create_worksheet(NARRATIVE_TAB, NARRATIVE_HEADERS)
+        records = [r for r in _get_all_records(ws, NARRATIVE_HEADERS) if r.get("ticker") == ticker]
     if not records:
         return None
     # generated_at is written as a real date object (see _DATE_FIELDS), so
@@ -668,9 +685,10 @@ def append_narrative(ticker: str, ai_analysis: dict) -> None:
     preserve the full history of writeups over time, not just the
     latest one."""
     ticker = ticker.upper()
-    ws = _get_or_create_worksheet(NARRATIVE_TAB, NARRATIVE_HEADERS)
-    _append_row(ws, _row_from_dict(ai_analysis, NARRATIVE_HEADERS), NARRATIVE_HEADERS)
-    logger.info("Narrative: appended new writeup for %s", ticker)
+    with WRITE_LOCK:
+        ws = _get_or_create_worksheet(NARRATIVE_TAB, NARRATIVE_HEADERS)
+        _append_row(ws, _row_from_dict(ai_analysis, NARRATIVE_HEADERS), NARRATIVE_HEADERS)
+        logger.info("Narrative: appended new writeup for %s", ticker)
 
 
 # --------------------------------------------------------------------------
@@ -689,7 +707,6 @@ def upsert_dashboard(
     (main.py) that already pulled this data for other tabs don't pay
     for redundant network/AI calls."""
     ticker = ticker.upper()
-    ws = _get_or_create_worksheet(DASHBOARD_TAB, DASHBOARD_HEADERS)
 
     recommendation = None
     valuation_rating = None
@@ -718,13 +735,15 @@ def upsert_dashboard(
         "latest_recommendation": recommendation,
         "last_updated": today_str(),
     }
-
     row = _row_from_dict(row_data, DASHBOARD_HEADERS)
-    row_number = _find_row_number(ws, ticker)
-    if row_number:
-        _write_row_at(ws, row_number, row, DASHBOARD_HEADERS)
-    else:
-        _append_row(ws, row, DASHBOARD_HEADERS)
+
+    with WRITE_LOCK:
+        ws = _get_or_create_worksheet(DASHBOARD_TAB, DASHBOARD_HEADERS)
+        row_number = _find_row_number(ws, ticker)
+        if row_number:
+            _write_row_at(ws, row_number, row, DASHBOARD_HEADERS)
+        else:
+            _append_row(ws, row, DASHBOARD_HEADERS)
     logger.info("Dashboard: upserted %s", ticker)
 
 
@@ -742,16 +761,17 @@ def ensure_watchlist_row(ticker: str, company_name: Optional[str] = None, sector
     instead, not this function.
     """
     ticker = ticker.upper()
-    ws = _get_or_create_worksheet(WATCHLIST_TAB, WATCHLIST_HEADERS)
-    row_number = _find_row_number(ws, ticker)
+    with WRITE_LOCK:
+        ws = _get_or_create_worksheet(WATCHLIST_TAB, WATCHLIST_HEADERS)
+        row_number = _find_row_number(ws, ticker)
 
-    if row_number:
-        _write_row_at(ws, row_number, [ticker, company_name, sector], WATCHLIST_HEADERS)
-        return
+        if row_number:
+            _write_row_at(ws, row_number, [ticker, company_name, sector], WATCHLIST_HEADERS)
+            return
 
-    new_row = [ticker, company_name, sector] + [None] * len(WATCHLIST_MANUAL_HEADERS)
-    _append_row(ws, new_row, WATCHLIST_HEADERS)
-    logger.info("Watchlist: created row for %s", ticker)
+        new_row = [ticker, company_name, sector] + [None] * len(WATCHLIST_MANUAL_HEADERS)
+        _append_row(ws, new_row, WATCHLIST_HEADERS)
+        logger.info("Watchlist: created row for %s", ticker)
 
 
 def get_watchlist_record(ticker: str) -> Optional[dict]:
@@ -759,10 +779,11 @@ def get_watchlist_record(ticker: str) -> Optional[dict]:
     None. Used by the dashboard app to pre-fill the manual-field edit
     form with whatever's already saved."""
     ticker = ticker.upper()
-    ws = _get_or_create_worksheet(WATCHLIST_TAB, WATCHLIST_HEADERS)
-    for record in _get_all_records(ws, WATCHLIST_HEADERS):
-        if record.get("ticker") == ticker:
-            return record
+    with WRITE_LOCK:
+        ws = _get_or_create_worksheet(WATCHLIST_TAB, WATCHLIST_HEADERS)
+        for record in _get_all_records(ws, WATCHLIST_HEADERS):
+            if record.get("ticker") == ticker:
+                return record
     return None
 
 
@@ -777,19 +798,20 @@ def update_watchlist_manual_fields(ticker: str, **fields) -> None:
     ensure_watchlist_row's docstring).
     """
     ticker = ticker.upper()
-    ws = _get_or_create_worksheet(WATCHLIST_TAB, WATCHLIST_HEADERS)
-    row_number = _find_row_number(ws, ticker)
-    if row_number is None:
-        raise ValueError(f"{ticker} has no Watchlist row yet -- call ensure_watchlist_row first")
-
     unknown = set(fields) - set(WATCHLIST_MANUAL_HEADERS)
     if unknown:
         raise ValueError(f"Unknown Watchlist field(s): {unknown}")
 
-    for header, value in fields.items():
-        col_idx = WATCHLIST_HEADERS.index(header) + 1
-        ws.cell(row=row_number, column=col_idx, value=_to_cell(value, header))
-    save_workbook()
+    with WRITE_LOCK:
+        ws = _get_or_create_worksheet(WATCHLIST_TAB, WATCHLIST_HEADERS)
+        row_number = _find_row_number(ws, ticker)
+        if row_number is None:
+            raise ValueError(f"{ticker} has no Watchlist row yet -- call ensure_watchlist_row first")
+
+        for header, value in fields.items():
+            col_idx = WATCHLIST_HEADERS.index(header) + 1
+            ws.cell(row=row_number, column=col_idx, value=_to_cell(value, header))
+        save_workbook()
     logger.info("Watchlist: updated manual fields for %s (%s)", ticker, ", ".join(fields))
 
 

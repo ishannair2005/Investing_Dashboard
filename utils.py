@@ -19,6 +19,7 @@ import functools
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime
 from typing import Any, Callable, Optional, TypeVar
@@ -31,6 +32,20 @@ from config import MAX_RETRIES, RETRY_BACKOFF_SECONDS
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+# Shared by excel_workbook.py and tickers.py, both of which mutate
+# process-global state (an in-memory openpyxl Workbook; data/tickers.json
+# on disk). Streamlit Cloud runs concurrent user sessions as threads
+# inside one process, not separate processes -- without this, two
+# overlapping "Add Company" requests can race on the same openpyxl
+# object, which is not thread-safe and has genuinely crashed the
+# deployed app with a segfault (openpyxl/lxml is C-extension backed;
+# unsynchronized concurrent mutation corrupts memory, not just data).
+# An RLock (not a plain Lock) because these two modules call into each
+# other's locked functions from within their own locked functions, and
+# a plain Lock would deadlock a thread trying to re-acquire what it
+# already holds.
+WRITE_LOCK = threading.RLock()
 
 
 def retry(

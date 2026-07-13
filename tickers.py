@@ -22,6 +22,7 @@ import os
 from datetime import date
 
 from config import TICKERS_FILE
+from utils import WRITE_LOCK
 
 logger = logging.getLogger(__name__)
 
@@ -136,17 +137,18 @@ def add_ticker(ticker: str, name: str, sector: str) -> dict:
     inactive/removed ones -- reactivate() should be used for those).
     """
     ticker = ticker.upper()
-    records = load_tickers()
+    with WRITE_LOCK:
+        records = load_tickers()
 
-    existing = next((r for r in records if r["ticker"] == ticker), None)
-    if existing is not None:
-        raise ValueError(
-            f"{ticker} is already in the universe (active={existing.get('active', True)})"
-        )
+        existing = next((r for r in records if r["ticker"] == ticker), None)
+        if existing is not None:
+            raise ValueError(
+                f"{ticker} is already in the universe (active={existing.get('active', True)})"
+            )
 
-    record = _seed_record({"ticker": ticker, "name": name, "sector": sector})
-    records.append(record)
-    save_tickers(records)
+        record = _seed_record({"ticker": ticker, "name": name, "sector": sector})
+        records.append(record)
+        save_tickers(records)
     logger.info("Added %s (%s, %s) to the universe", ticker, name, sector)
     return record
 
@@ -157,30 +159,32 @@ def remove_ticker(ticker: str, hard: bool = False) -> None:
     hard=True deletes the record entirely (does not touch already-written
     workbook data, which lives in the .xlsx file, not this file)."""
     ticker = ticker.upper()
-    records = load_tickers()
+    with WRITE_LOCK:
+        records = load_tickers()
 
-    if hard:
-        new_records = [r for r in records if r["ticker"] != ticker]
-        if len(new_records) == len(records):
+        if hard:
+            new_records = [r for r in records if r["ticker"] != ticker]
+            if len(new_records) == len(records):
+                raise ValueError(f"{ticker} is not in the universe")
+            save_tickers(new_records)
+            logger.info("Hard-removed %s from the universe", ticker)
+            return
+
+        record = next((r for r in records if r["ticker"] == ticker), None)
+        if record is None:
             raise ValueError(f"{ticker} is not in the universe")
-        save_tickers(new_records)
-        logger.info("Hard-removed %s from the universe", ticker)
-        return
-
-    record = next((r for r in records if r["ticker"] == ticker), None)
-    if record is None:
-        raise ValueError(f"{ticker} is not in the universe")
-    record["active"] = False
-    save_tickers(records)
-    logger.info("Deactivated %s (soft remove)", ticker)
+        record["active"] = False
+        save_tickers(records)
+        logger.info("Deactivated %s (soft remove)", ticker)
 
 
 def reactivate_ticker(ticker: str) -> None:
     ticker = ticker.upper()
-    records = load_tickers()
-    record = next((r for r in records if r["ticker"] == ticker), None)
-    if record is None:
-        raise ValueError(f"{ticker} is not in the universe")
-    record["active"] = True
-    save_tickers(records)
+    with WRITE_LOCK:
+        records = load_tickers()
+        record = next((r for r in records if r["ticker"] == ticker), None)
+        if record is None:
+            raise ValueError(f"{ticker} is not in the universe")
+        record["active"] = True
+        save_tickers(records)
     logger.info("Reactivated %s", ticker)
