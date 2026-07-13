@@ -201,5 +201,12 @@
     "sector": "Technology",
     "added_date": "2026-07-07",
     "active": true
+  },
+  {
+    "ticker": "NFLX",
+    "name": "Netflix, Inc.",
+    "sector": "Communication Services",
+    "added_date": "2026-07-13",
+    "active": true
   }
 ]
